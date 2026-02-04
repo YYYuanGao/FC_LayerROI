@@ -1,0 +1,28 @@
+ROIS="dl_cauPFC ven cauPFC Superior_Parietal Inferior_Parietal V1 V2 V3 V4"
+LAYERMAP=layers_3_layers_equidist.nii.gz
+
+for roi in $ROIS; do
+  for layer in 1 2 3; do
+    echo "Processing ${roi} Layer ${layer}"
+    3dcalc \
+      -a ${roi}.nii.gz \
+      -b ${LAYERMAP} \
+      -expr "step(a)*equals(b,${layer})" \
+      -prefix ${roi}_L${layer}_T1.nii.gz \
+      -overwrite
+  done
+done
+
+%check 
+
+for f in *_L*_T1.nii.gz; do
+  echo $f
+  3dBrickStat -non-zero -count $f
+done
+
+freeview \
+  sub-01_T1w.nii \
+  V1_L1_T1.nii.gz:colormap=red \
+  V1_L2_T1.nii.gz:colormap=green \
+  V1_L3_T1.nii.gz:colormap=blue
+
