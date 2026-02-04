@@ -1,0 +1,34 @@
+%Atlas: HCPMMP1.nii.gz
+%Path : /data/p_03179/Kenshu_Resting/BIDS/sub-01/anat/HCPMMP_KSrest/Kenshu_rest/
+%Space: native T1
+
+3dcalc -a HCPMMP1.nii.gz \
+-expr 'equals(a,1030)+equals(a,1043)+equals(a,1046)+equals(a,1047)+equals(a,1048)+equals(a,1049)+equals(a,1050)+equals(a,1051)+equals(a,1096)+equals(a,1118)+equals(a,2030)+equals(a,2043)+equals(a,2046)+equals(a,2047)+equals(a,2048)+equals(a,2049)+equals(a,2050)+equals(a,2051)+equals(a,2096)+equals(a,2118)' \
+-prefix Superior_Parietal.nii.gz -overwrite
+
+3dcalc -a HCPMMP1.nii.gz \
+-expr 'equals(a,1117)+equals(a,1144)+equals(a,1145)+equals(a,1146)+equals(a,1147)+equals(a,1148)+equals(a,1149)+equals(a,1150)+equals(a,1151)+equals(a,1152)+equals(a,2117)+equals(a,2144)+equals(a,2145)+equals(a,2146)+equals(a,2147)+equals(a,2148)+equals(a,2149)+equals(a,2150)+equals(a,2151)+equals(a,2152)' \
+-prefix Inferior_Parietal.nii.gz -overwrite
+
+3dcalc -a HCPMMP1.nii.gz \
+-expr 'equals(a,1002)+equals(a,2002)' \
+-prefix V1.nii.gz -overwrite
+
+3dcalc -a HCPMMP1.nii.gz \
+-expr 'equals(a,1005)+equals(a,2005)' \
+-prefix V2.nii.gz -overwrite
+
+3dcalc -a HCPMMP1.nii.gz \
+-expr 'equals(a,1006)+equals(a,2006)' \
+-prefix V3.nii.gz -overwrite
+
+%check
+freeview sub-01_T1w.nii \
+Superior_Parietal.nii.gz:opacity=0.4 \
+Inferior_Parietal.nii.gz:opacity=0.4 \
+V1.nii.gz:opacity=0.4
+
+for f in Superior_Parietal Inferior_Parietal V1 V2 V3 V4; do
+  echo $f
+  3dBrickStat -non-zero -count ${f}.nii.gz
+done
