@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =========================
+# User paths (EDIT IF NEEDED)
+# =========================
+
+# HCP-MMP atlas (native T1 space)
+ATLAS_DIR="/data/p_03179/Kenshu_Resting/BIDS/sub-01/anat/HCPMMP_KSrest/Kenshu_rest"
+ATLAS="${ATLAS_DIR}/HCPMMP1.nii.gz"
+
+# 3-layer label map (native T1 space)
+# (You created this in SUMA/layers_nativeT1/)
+LAYER_DIR="/data/p_03179/Kenshu_Resting/derivatives/fastsurfer/sub-01/SUMA/layers_nativeT1"
+LAYERS="${LAYER_DIR}/layers_3_layers_equidist.nii.gz"
+
+# Where to write outputs
+OUTDIR="${ATLAS_DIR}/roi_layer_masks"
+mkdir -p "${OUTDIR}"
+
+# =========================
+# Sanity checks
+# =========================
+[[ -f "${ATLAS}" ]]  || { echo "ERROR: Atlas not found: ${ATLAS}"; exit 1; }
+[[ -f "${LAYERS}" ]] || { echo "ERROR: Layers not found: ${LAYERS}"; exit 1; }
+
+echo "[INFO] ATLAS  = ${ATLAS}"
+echo "[INFO] LAYERS = ${LAYERS}"
+echo "[INFO] OUTDIR = ${OUTDIR}"
+echo ""
+
+# =========================
+# ROI definitions (your labels)
+# =========================
+DL_IDS=(1010 1012 1044 1054 1055 1096 2010 2012 2044 2054 2055 2096)
+VEN_IDS=(1011 1056 1078 2011 2056 2078)
+
+# Build 3dcalc expression for a list of IDs: equals(a,id1)+equals(a,id2)+...
+build_expr () {
+  local -n arr=$1
+  local expr=""
+  for id in "${arr[@]}"; do
+    if [[ -z "${expr}" ]]; then
+      expr="equals(a,${id})"
+    else
+      expr="${expr}+equals(a,${id})"
+    fi
+  done
+  echo "${expr}"
+}
+
+DL_EXPR=$(build_expr DL_IDS)
+VEN_EXPR=$(build_expr VEN_IDS)
+
+# =========================
+# 1) Create ROI masks in T1 space
+# =========================
+echo "[INFO] Creating ROI masks..."
+
+3dcalc -a "${ATLAS}" -expr "${DL_EXPR}"  -prefix "${OUTDIR}/dl_cauPFC.nii.gz"  -overwrite
+3dcalc -a "${ATLAS}" -expr "${VEN_EXPR}" -prefix "${OUTDIR}/ven_cauPFC.nii.gz" -overwrite
+
+# Make them strictly binary
+3dcalc -a "${OUTDIR}/dl_cauPFC.nii.gz"  -expr 'step(a)' -prefix "${OUTDIR}/dl_cauPFC.nii.gz"  -overwrite
+3dcalc -a "${OUTDIR}/ven_cauPFC.nii.gz" -expr 'step(a)' -prefix "${OUTDIR}/ven_cauPFC.nii.gz" -overwrite
+
+# =========================
+# 2) ROI × layer intersections (3 layers)
+# =========================
+echo "[INFO] Creating ROI × layer intersections..."
+
+for roi in dl_cauPFC ven_cauPFC; do
+  for L in 1 2 3; do
+    3dcalc \
+      -a "${OUTDIR}/${roi}.nii.gz" \
+      -b "${LAYERS}" \
+      -expr "step(a)*equals(b,${L})" \
+      -prefix "${OUTDIR}/${roi}_L${L}_T1.nii.gz" \
+      -overwrite
+  done
+done
+
+# =========================
+# 3) Quick QC: voxel counts
+# =========================
+echo ""
+echo "[QC] Non-zero voxel counts:"
+for f in "${OUTDIR}"/dl_cauPFC*.nii.gz "${OUTDIR}"/ven_cauPFC*.nii.gz; do
+  echo "$(basename "$f")  $(3dBrickStat -non-zero -count "$f")"
+done
+
+echo ""
+echo "[DONE] Outputs written to: ${OUTDIR}"
