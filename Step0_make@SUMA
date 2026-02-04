@@ -1,0 +1,14 @@
+% FastSurfer/FreeSurfer subject ==> mri/ surf/ label/
+
+cd /data/p_03179/Kenshu_Resting/derivatives/fastsurfer/sub-01 [your path]
+@SUMA_Make_Spec_FS -sid sub-01 -NIFTI
+
+ls -lh SUMA | head
+ls -lh SUMA | grep -E '\.spec$|pial.*gii|smoothwm.*gii'
+
+
+%sub-01_lh.spec/sub-01_rh.spec
+
+%*lh.pial.gii、*lh.smoothwm.gii
+
+%*rh.pial.gii、*rh.smoothwm.gii
