@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BIDS_ROOT="/data/p_03179/Yuan_Test/BIDS"
+
+# ========= YOU EDIT: subjects to run =========
+SUBS=("sub-13" "sub-14" "sub-16" )   # e.g. ("sub-01" "sub-02" "sub-05")
+# ============================================
+
+DEFAULT_TPATTERN="alt+z"
+
+# ---------- helpers ----------
+resolve_nii() {
+  local base="$1"
+  if [[ -f "${base}.nii.gz" ]]; then
+    echo "${base}.nii.gz"
+  elif [[ -f "${base}.nii" ]]; then
+    echo "${base}.nii"
+  else
+    echo "ERROR: Cannot find NIfTI for base: ${base} (.nii or .nii.gz)" >&2
+    return 1
+  fi
+}
+
+pe_to_vec() {
+  local pe="$1"
+  local trot="$2"
+  case "${pe}" in
+    i)  echo "1 0 0 ${trot}" ;;
+    i-) echo "-1 0 0 ${trot}" ;;
+    j)  echo "0 1 0 ${trot}" ;;
+    j-) echo "0 -1 0 ${trot}" ;;
+    k)  echo "0 0 1 ${trot}" ;;
+    k-) echo "0 0 -1 ${trot}" ;;
+    *)  echo "ERROR: Unknown PhaseEncodingDirection: ${pe}" >&2; return 1 ;;
+  esac
+}
+
+infer_fsldir() {
+  if [[ -z "${FSLDIR:-}" ]]; then
+    local topup_path
+    topup_path="$(command -v topup)"
+    export FSLDIR="$(cd "$(dirname "${topup_path}")/.." && pwd)"
+    export PATH="${FSLDIR}/bin:${PATH}"
+  fi
+}
+
+# ---------- main per-sub pipeline ----------
+run_one_sub() {
+  local sub="$1"
+  local func_dir="${BIDS_ROOT}/${sub}/func"
+  [[ -d "${func_dir}" ]] || { echo "SKIP ${sub}: no func dir"; return 0; }
+
+  echo
+  echo "=============================="
+  echo "Running: ${sub}"
+  echo "FUNC_DIR: ${func_dir}"
+  echo "=============================="
+
+  # Find one AP/PA pair (first match)
+  local ap_json pa_json ap_base pa_base
+  ap_json="$(ls -1 ${func_dir}/${sub}_task-*_dir-AP_bold.json 2>/dev/null | head -n 1 || true)"
+  pa_json="$(ls -1 ${func_dir}/${sub}_task-*_dir-PA_bold.json 2>/dev/null | head -n 1 || true)"
+  ap_base="$(echo "${ap_json}" | sed 's/\.json$//')"
+  pa_base="$(echo "${pa_json}" | sed 's/\.json$//')"
+
+  if [[ -z "${ap_json}" || -z "${pa_json}" ]]; then
+    echo "SKIP ${sub}: cannot find AP/PA JSON"
+    return 0
+  fi
+
+  local ap_nii pa_nii
+  ap_nii="$(resolve_nii "${ap_base}")" || { echo "SKIP ${sub}: missing AP nii"; return 0; }
+  pa_nii="$(resolve_nii "${pa_base}")" || { echo "SKIP ${sub}: missing PA nii"; return 0; }
+
+  local outdir="${func_dir}/derivatives/fsl_afni_fsl_preproc"
+  mkdir -p "${outdir}"
+
+  infer_fsldir
+  local topup_cfg="${FSLDIR}/etc/flirtsch/b02b0.cnf"
+  [[ -f "${topup_cfg}" ]] || { echo "ERROR: missing ${topup_cfg}"; return 1; }
+
+  # ---- JSON fields ----
+  local ap_pe pa_pe ap_trot pa_trot tr
+  ap_pe="$(jq -r '.PhaseEncodingDirection // empty' "${ap_json}")"
+  pa_pe="$(jq -r '.PhaseEncodingDirection // empty' "${pa_json}")"
+  ap_trot="$(jq -r '.TotalReadoutTime // empty' "${ap_json}")"
+  pa_trot="$(jq -r '.TotalReadoutTime // empty' "${pa_json}")"
+  tr="$(jq -r '.RepetitionTime // empty' "${ap_json}")"
+
+  if [[ -z "${ap_pe}" || -z "${pa_pe}" || -z "${ap_trot}" || -z "${pa_trot}" || -z "${tr}" ]]; then
+    echo "ERROR ${sub}: missing JSON fields"
+    return 1
+  fi
+
+  local acq="${outdir}/acqparams.txt"
+  {
+    pe_to_vec "${ap_pe}" "${ap_trot}"
+    pe_to_vec "${pa_pe}" "${pa_trot}"
+  } > "${acq}"
+
+  # ---- uniform NIfTI copy ----
+  local AP="${outdir}/AP.nii.gz"
+  local PA="${outdir}/PA.nii.gz"
+  fslmaths "${ap_nii}" "${AP}"
+  fslmaths "${pa_nii}" "${PA}"
+
+  # ---- TOPUP: AP vol0 + PA mean (your strategy) ----
+  local ap_b0="${outdir}/AP_b0.nii.gz"
+  local pa_mean="${outdir}/PA_mean.nii.gz"
+  local b0_pair="${outdir}/b0_pair.nii.gz"
+
+  fslroi "${AP}" "${ap_b0}" 0 1
+  fslmaths "${PA}" -Tmean "${pa_mean}"
+  fslmerge -t "${b0_pair}" "${ap_b0}" "${pa_mean}"
+
+  local topup_base="${outdir}/topup_APPA"
+  topup --imain="${b0_pair}" \
+        --datain="${acq}" \
+        --config="${topup_cfg}" \
+        --out="${topup_base}" \
+        --fout="${outdir}/field_Hz.nii.gz" \
+        --iout="${outdir}/b0_unwarped.nii.gz"
+
+  # ---- applytopup to AP and PA ----
+  local ap_dc="${outdir}/AP_dc.nii.gz"
+  local pa_dc="${outdir}/PA_dc.nii.gz"
+
+  applytopup --imain="${AP}" --inindex=1 --datain="${acq}" --topup="${topup_base}" --method=jac --out="${ap_dc}"
+  applytopup --imain="${PA}" --inindex=2 --datain="${acq}" --topup="${topup_base}" --method=jac --out="${pa_dc}"
+
+  # ---- slice timing on AP only (as in your script) ----
+  local ap_dc_st="${outdir}/AP_dc_st.nii.gz"
+  local slt_raw
+  slt_raw="$(jq -r '.SliceTiming // empty | @tsv' "${ap_json}")"
+
+  if [[ -n "${slt_raw}" ]]; then
+    local slt_1d="${outdir}/SliceTiming_AP.1D"
+    echo "${slt_raw}" > "${slt_1d}"
+    3dTshift -prefix "${ap_dc_st}" -tpattern @"${slt_1d}" "${ap_dc}"
+  else
+    3dTshift -prefix "${ap_dc_st}" -tpattern "${DEFAULT_TPATTERN}" "${ap_dc}"
+  fi
+
+  # ---- motion correction (vol0 ref) ----
+  local ap_mc="${outdir}/AP_dc_st_mc.nii.gz"
+  mcflirt -in "${ap_dc_st}" -out "${ap_mc}" -refvol 0 -plots -mats -report
+
+  # ---- 2-cycle high-pass ----
+  local nvol
+  nvol=$(fslnvols "${ap_mc}")
+  local hp_sigma
+  hp_sigma=$(python3 - <<PY
+tr=float("${tr}")
+n=int("${nvol}")
+run_dur=tr*n
+print(run_dur/4.0)
+PY
+)
+  local ap_final="${outdir}/AP_dc_st_mc_hp2cyc.nii.gz"
+  fslmaths "${ap_mc}" -bptf "${hp_sigma}" -1 "${ap_final}"
+
+  echo "DONE ${sub}: ${ap_final}"
+}
+
+# ---------- run selected subjects ----------
+for s in "${SUBS[@]}"; do
+  run_one_sub "${s}"
+done
+
+echo
+echo "ALL SELECTED SUBJECTS DONE."
