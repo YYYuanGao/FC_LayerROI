@@ -22,6 +22,11 @@
 -expr 'equals(a,1006)+equals(a,2006)' \
 -prefix V3.nii.gz -overwrite
 
+3dcalc -a HCPMMP1.nii.gz \
+-expr 'equals(a,1007)+equals(a,2007)' \
+-prefix V4.nii.gz -overwrite
+
+
 %check
 freeview sub-01_T1w.nii \
 Superior_Parietal.nii.gz:opacity=0.4 \
